@@ -1,4 +1,12 @@
-CREATE VIEW v_payroll_avg AS
+-- SQL Project - Food availability based on average income in Czech Republic
+-- Author: Natalia Hlavacova
+
+-- ============================================================
+-- VIEWS
+-- ============================================================
+
+-- Average salary by industry and year
+CREATE VIEW avg_salaries AS
 SELECT 
     payroll_year,
     industry_branch_code,
@@ -12,9 +20,11 @@ WHERE value_type_code = 5958
   AND value IS NOT NULL
 GROUP BY payroll_year, industry_branch_code, cpib.name;
 
-CREATE v_price_avg AS
+
+-- Average food prices by category and year
+CREATE VIEW avg_prices AS
 SELECT 
-    EXTRACT(YEAR FROM date_from)::int AS price_year,
+    DATE_PART('year', date_from)::int AS price_year,
     category_code,
     cpc.name AS food_name,
     cpc.price_value,
@@ -25,24 +35,35 @@ JOIN czechia_price_category cpc
     ON cp.category_code = cpc.code
 WHERE region_code IS NULL
   AND value IS NOT NULL
-GROUP BY EXTRACT(YEAR FROM date_from), category_code, cpc.name, cpc.price_value, cpc.price_unit;
+GROUP BY DATE_PART('year', date_from), category_code, cpc.name, cpc.price_value, cpc.price_unit;
 
+
+-- ============================================================
+-- PRIMARY TABLE
+-- Salaries and food prices for comparable period (2006-2018)
+-- ============================================================
 
 CREATE TABLE t_natalia_hlavacova_project_SQL_primary_final AS
 SELECT 
-    vpa.payroll_year AS year,
-    vpa.industry_branch_code,
-    vpa.industry_name,
-    vpa.avg_salary,
-    vpr.category_code,
-    vpr.food_name,
-    vpr.price_value,
-    vpr.price_unit,
-    vpr.avg_price
-FROM v_payroll_avg vpa
-JOIN v_price_avg vpr
-    ON vpa.payroll_year = vpr.price_year
-WHERE vpa.payroll_year BETWEEN 2006 AND 2018;
+    sal.payroll_year AS year,
+    sal.industry_branch_code,
+    sal.industry_name,
+    sal.avg_salary,
+    pr.category_code,
+    pr.food_name,
+    pr.price_value,
+    pr.price_unit,
+    pr.avg_price
+FROM avg_salaries sal
+JOIN avg_prices pr
+    ON sal.payroll_year = pr.price_year
+WHERE sal.payroll_year BETWEEN 2006 AND 2018;
+
+
+-- ============================================================
+-- SECONDARY TABLE
+-- GDP, GINI and population of European countries (2006-2018)
+-- ============================================================
 
 CREATE TABLE t_natalia_hlavacova_project_SQL_secondary_final AS
 SELECT 
@@ -57,71 +78,88 @@ JOIN countries c
 WHERE c.continent = 'Europe'
   AND e.year BETWEEN 2006 AND 2018;
 
+
+-- ============================================================
+-- QUESTION 1: Do wages grow in all industries or do some decline?
+-- ============================================================
+
+-- Full overview with year-over-year comparison
 SELECT 
-    curr.industry_name,
-    prev.payroll_year AS year_prev,
-    curr.payroll_year AS year_curr,
-    prev.avg_salary AS salary_prev,
-    curr.avg_salary AS salary_curr,
-    ROUND((curr.avg_salary - prev.avg_salary)::numeric, 2) AS salary_diff,
+    t1.industry_name,
+    t2.payroll_year AS year_prev,
+    t1.payroll_year AS year_curr,
+    t2.avg_salary AS salary_prev,
+    t1.avg_salary AS salary_curr,
+    ROUND((t1.avg_salary - t2.avg_salary)::numeric, 2) AS salary_diff,
     CASE 
-        WHEN curr.avg_salary > prev.avg_salary THEN 'rast'
-        WHEN curr.avg_salary < prev.avg_salary THEN 'pokles'
-        ELSE 'bez zmeny'
+        WHEN t1.avg_salary > t2.avg_salary THEN 'growth'
+        WHEN t1.avg_salary < t2.avg_salary THEN 'decline'
+        ELSE 'no change'
     END AS trend
-FROM v_payroll_avg curr
-JOIN v_payroll_avg prev
-    ON curr.industry_branch_code = prev.industry_branch_code
-   AND curr.payroll_year = prev.payroll_year + 1
-WHERE curr.industry_branch_code IS NOT NULL
-  AND curr.payroll_year BETWEEN 2006 AND 2018
-ORDER BY curr.industry_name, curr.payroll_year;
+FROM avg_salaries t1
+JOIN avg_salaries t2
+    ON t1.industry_branch_code = t2.industry_branch_code
+   AND t1.payroll_year = t2.payroll_year + 1
+WHERE t1.industry_branch_code IS NOT NULL
+  AND t1.payroll_year BETWEEN 2006 AND 2018
+ORDER BY t1.industry_name, t1.payroll_year;
 
+-- Only years with salary decline
 SELECT 
-    curr.industry_name,
-    curr.payroll_year AS year_of_decline,
-    prev.avg_salary AS salary_prev,
-    curr.avg_salary AS salary_curr,
-    ROUND(((curr.avg_salary - prev.avg_salary) / prev.avg_salary * 100)::numeric, 2) AS pct_change
-FROM v_payroll_avg curr
-JOIN v_payroll_avg prev
-    ON curr.industry_branch_code = prev.industry_branch_code
-   AND curr.payroll_year = prev.payroll_year + 1
-WHERE curr.avg_salary < prev.avg_salary
-  AND curr.industry_branch_code IS NOT NULL
-  AND curr.payroll_year BETWEEN 2006 AND 2018
-ORDER BY curr.payroll_year, curr.industry_name;
+    t1.industry_name,
+    t1.payroll_year AS year_of_decline,
+    t2.avg_salary AS salary_prev,
+    t1.avg_salary AS salary_curr,
+    ROUND(((t1.avg_salary - t2.avg_salary) / t2.avg_salary * 100)::numeric, 2) AS pct_change
+FROM avg_salaries t1
+JOIN avg_salaries t2
+    ON t1.industry_branch_code = t2.industry_branch_code
+   AND t1.payroll_year = t2.payroll_year + 1
+WHERE t1.avg_salary < t2.avg_salary
+  AND t1.industry_branch_code IS NOT NULL
+  AND t1.payroll_year BETWEEN 2006 AND 2018
+ORDER BY t1.payroll_year, t1.industry_name;
 
-WITH overall_avg_salary AS (
+
+-- ============================================================
+-- QUESTION 2: How many liters of milk and kg of bread can be
+--             bought for average salary in first and last period?
+-- ============================================================
+
+WITH avg_salary_all AS (
     SELECT 
         payroll_year,
         ROUND(AVG(avg_salary)::numeric, 2) AS overall_salary
-    FROM v_payroll_avg
+    FROM avg_salaries
     WHERE industry_branch_code IS NOT NULL
     GROUP BY payroll_year
 ),
-food_prices AS (
+food AS (
     SELECT 
         price_year,
         food_name,
         price_unit,
         avg_price
-    FROM v_price_avg
+    FROM avg_prices
     WHERE category_code IN (114201, 111301)
 )
 SELECT 
-    oas.payroll_year AS year,
-    fp.food_name,
-    fp.price_unit,
-    oas.overall_salary,
-    fp.avg_price,
-    FLOOR(oas.overall_salary / fp.avg_price) AS purchasable_amount
-FROM overall_avg_salary oas
-JOIN food_prices fp
-    ON oas.payroll_year = fp.price_year
-WHERE oas.payroll_year IN (2006, 2018)
-ORDER BY fp.food_name, oas.payroll_year;
+    s.payroll_year AS year,
+    f.food_name,
+    f.price_unit,
+    s.overall_salary,
+    f.avg_price,
+    FLOOR(s.overall_salary / f.avg_price) AS purchasable_amount
+FROM avg_salary_all s
+JOIN food f
+    ON s.payroll_year = f.price_year
+WHERE s.payroll_year IN (2006, 2018)
+ORDER BY f.food_name, s.payroll_year;
 
+
+-- ============================================================
+-- QUESTION 3: Which food category has the slowest price growth?
+-- ============================================================
 
 WITH yearly_prices AS (
     SELECT 
@@ -130,7 +168,7 @@ WITH yearly_prices AS (
         price_year,
         avg_price,
         LAG(avg_price) OVER (PARTITION BY category_code ORDER BY price_year) AS prev_price
-    FROM v_price_avg
+    FROM avg_prices
 ),
 yearly_changes AS (
     SELECT 
@@ -149,99 +187,110 @@ GROUP BY category_code, food_name
 ORDER BY avg_annual_pct_change ASC
 LIMIT 5;
 
-WITH salary_growth AS (
+
+-- ============================================================
+-- QUESTION 4: Is there a year where food price growth was
+--             significantly higher than salary growth (>10%)?
+-- ============================================================
+
+WITH salary_by_year AS (
     SELECT 
         payroll_year AS year,
         ROUND(AVG(avg_salary)::numeric, 2) AS avg_salary
-    FROM v_payroll_avg
+    FROM avg_salaries
     WHERE industry_branch_code IS NOT NULL
     GROUP BY payroll_year
 ),
-salary_yoy AS (
+salary_change AS (
     SELECT 
         year,
         avg_salary,
         LAG(avg_salary) OVER (ORDER BY year) AS prev_salary,
         ROUND(((avg_salary - LAG(avg_salary) OVER (ORDER BY year)) 
-            / LAG(avg_salary) OVER (ORDER BY year) * 100)::numeric, 2) AS salary_pct_change
-    FROM salary_growth
+            / LAG(avg_salary) OVER (ORDER BY year) * 100)::numeric, 2) AS salary_pct
+    FROM salary_by_year
 ),
-price_growth AS (
+price_by_year AS (
     SELECT 
         price_year AS year,
         ROUND(AVG(avg_price)::numeric, 2) AS avg_price
-    FROM v_price_avg
+    FROM avg_prices
     GROUP BY price_year
 ),
-price_yoy AS (
+price_change AS (
     SELECT 
         year,
         avg_price,
         LAG(avg_price) OVER (ORDER BY year) AS prev_price,
         ROUND(((avg_price - LAG(avg_price) OVER (ORDER BY year)) 
-            / LAG(avg_price) OVER (ORDER BY year) * 100)::numeric, 2) AS price_pct_change
-    FROM price_growth
+            / LAG(avg_price) OVER (ORDER BY year) * 100)::numeric, 2) AS price_pct
+    FROM price_by_year
 )
 SELECT 
     s.year,
-    s.salary_pct_change,
-    p.price_pct_change,
-    ROUND((p.price_pct_change - s.salary_pct_change)::numeric, 2) AS difference
-FROM salary_yoy s
-JOIN price_yoy p ON s.year = p.year
-WHERE s.salary_pct_change IS NOT NULL
-  AND p.price_pct_change IS NOT NULL
+    s.salary_pct,
+    p.price_pct,
+    ROUND((p.price_pct - s.salary_pct)::numeric, 2) AS difference
+FROM salary_change s
+JOIN price_change p ON s.year = p.year
+WHERE s.salary_pct IS NOT NULL
+  AND p.price_pct IS NOT NULL
 ORDER BY difference DESC;
 
-WITH gdp_cz AS (
+
+-- ============================================================
+-- QUESTION 5: Does GDP affect salary and food price changes?
+-- ============================================================
+
+WITH gdp_data AS (
     SELECT 
         year,
         gdp,
         LAG(gdp) OVER (ORDER BY year) AS prev_gdp,
         ROUND(((gdp - LAG(gdp) OVER (ORDER BY year)) 
-            / LAG(gdp) OVER (ORDER BY year) * 100)::numeric, 2) AS gdp_pct_change
+            / LAG(gdp) OVER (ORDER BY year) * 100)::numeric, 2) AS gdp_pct
     FROM economies
     WHERE country = 'Czech Republic'
       AND year BETWEEN 2006 AND 2018
 ),
-salary_growth AS (
+salary_by_year AS (
     SELECT 
         payroll_year AS year,
         ROUND(AVG(avg_salary)::numeric, 2) AS avg_salary
-    FROM v_payroll_avg
+    FROM avg_salaries
     WHERE industry_branch_code IS NOT NULL
     GROUP BY payroll_year
 ),
-salary_yoy AS (
+salary_change AS (
     SELECT 
         year,
         ROUND(((avg_salary - LAG(avg_salary) OVER (ORDER BY year)) 
-            / LAG(avg_salary) OVER (ORDER BY year) * 100)::numeric, 2) AS salary_pct_change
-    FROM salary_growth
+            / LAG(avg_salary) OVER (ORDER BY year) * 100)::numeric, 2) AS salary_pct
+    FROM salary_by_year
 ),
-price_growth AS (
+price_by_year AS (
     SELECT 
         price_year AS year,
         ROUND(AVG(avg_price)::numeric, 2) AS avg_price
-    FROM v_price_avg
+    FROM avg_prices
     GROUP BY price_year
 ),
-price_yoy AS (
+price_change AS (
     SELECT 
         year,
         ROUND(((avg_price - LAG(avg_price) OVER (ORDER BY year)) 
-            / LAG(avg_price) OVER (ORDER BY year) * 100)::numeric, 2) AS price_pct_change
-    FROM price_growth
+            / LAG(avg_price) OVER (ORDER BY year) * 100)::numeric, 2) AS price_pct
+    FROM price_by_year
 )
 SELECT 
     g.year,
-    g.gdp_pct_change,
-    s.salary_pct_change,
-    p.price_pct_change,
-    LEAD(s.salary_pct_change) OVER (ORDER BY g.year) AS salary_pct_next_year,
-    LEAD(p.price_pct_change) OVER (ORDER BY g.year) AS price_pct_next_year
-FROM gdp_cz g
-LEFT JOIN salary_yoy s ON g.year = s.year
-LEFT JOIN price_yoy p ON g.year = p.year
+    g.gdp_pct,
+    s.salary_pct,
+    p.price_pct,
+    LEAD(s.salary_pct) OVER (ORDER BY g.year) AS salary_pct_next_year,
+    LEAD(p.price_pct) OVER (ORDER BY g.year) AS price_pct_next_year
+FROM gdp_data g
+LEFT JOIN salary_change s ON g.year = s.year
+LEFT JOIN price_change p ON g.year = p.year
 WHERE g.prev_gdp IS NOT NULL
 ORDER BY g.year;
